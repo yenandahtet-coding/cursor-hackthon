@@ -2,8 +2,19 @@ import type { AuthUser, UserRole } from '@/types';
 
 const STORAGE_KEY = 'kizuna_user';
 
-export function login(name: string, role: UserRole, email: string): AuthUser {
-  const user: AuthUser = { name, role, email };
+export function login(name: string, role: UserRole, email: string, extras?: { id?: string; phone?: string }): AuthUser {
+  const user: AuthUser = {
+    name,
+    role,
+    email,
+    ...(extras?.id ? { id: extras.id } : {}),
+    ...(extras?.phone ? { phone: extras.phone } : {}),
+  };
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
+  return user;
+}
+
+export function setSession(user: AuthUser): AuthUser {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
   return user;
 }

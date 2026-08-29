@@ -16,8 +16,9 @@ import {
   Heart,
   Sparkles,
 } from 'lucide-react';
-import type { Lead } from '@/types';
+import type { Lead, Client } from '@/types';
 import { logout, getCurrentUser } from '@/auth';
+import { fetchLeads, fetchClients } from '@/api';
 
 type NavItem = 'leads' | 'clients' | 'analytics';
 
@@ -52,42 +53,54 @@ function getCallScript(lead: Lead): string[] {
   ];
 }
 
-interface StoredLead {
-  id: string;
-  customerName: string;
-  insight: string;
-  intent: Lead['intent'];
-  product: string;
-  lastActive: string;
-  timestamp?: number;
-}
-
 export default function RMDashboard() {
   const navigate = useNavigate();
   const user = getCurrentUser();
   const [activeNav, setActiveNav] = useState<NavItem>('leads');
   const [leads, setLeads] = useState<Lead[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
   const [loading, setLoading] = useState(true);
+  const [clientsLoading, setClientsLoading] = useState(true);
   const [scriptLead, setScriptLead] = useState<Lead | null>(null);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem('rm_leads');
-      const stored: StoredLead[] = raw ? JSON.parse(raw) : [];
-      const normalized: Lead[] = stored.map((l, i) => ({
-        id: l.id ?? String(i),
-        customerName: l.customerName ?? 'Unknown',
-        insight: l.insight ?? 'No insight available',
-        intent: l.intent ?? 'high',
-        product: l.product ?? 'Family Protection',
-        lastActive: l.lastActive ?? 'Recently',
-      }));
-      setLeads(normalized);
-    } catch {
-      setLeads([]);
-    } finally {
-      setLoading(false);
-    }
+    let cancelled = false;
+
+    const loadLeads = async () => {
+      try {
+        const data = await fetchLeads();
+        if (!cancelled) setLeads(data);
+      } catch (err) {
+        console.error('Failed to load leads from MongoDB:', err);
+        if (!cancelled) setLeads([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    const loadClients = async () => {
+      try {
+        const data = await fetchClients();
+        if (!cancelled) setClients(data);
+      } catch (err) {
+        console.error('Failed to load clients from MongoDB:', err);
+        if (!cancelled) setClients([]);
+      } finally {
+        if (!cancelled) setClientsLoading(false);
+      }
+    };
+
+    void loadLeads();
+    void loadClients();
+    const interval = window.setInterval(() => {
+      void loadLeads();
+      void loadClients();
+    }, 4000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
   }, []);
 
   const handleLogout = () => {
@@ -96,6 +109,33 @@ export default function RMDashboard() {
   };
 
   const highIntentCount = leads.filter((l) => l.intent === 'high').length;
+
+  const weeklyLeadTrend = (() => {
+    const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const counts = [0, 0, 0, 0, 0, 0, 0];
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    // Monday-based week start
+    const day = startOfToday.getDay(); // 0 Sun .. 6 Sat
+    const mondayOffset = day === 0 ? -6 : 1 - day;
+    const weekStart = new Date(startOfToday);
+    weekStart.setDate(startOfToday.getDate() + mondayOffset);
+
+    for (const lead of leads) {
+      const ts = lead.timestamp ?? Date.now();
+      const d = new Date(ts);
+      if (Number.isNaN(d.getTime()) || d < weekStart) continue;
+      const idx = (d.getDay() + 6) % 7; // Mon=0 ... Sun=6
+      counts[idx] += 1;
+    }
+
+    const max = Math.max(...counts, 1);
+    return labels.map((label, i) => ({
+      label,
+      count: counts[i],
+      percent: Math.round((counts[i] / max) * 100),
+    }));
+  })();
 
   return (
     <div className="min-h-screen bg-gray-50 flex">
@@ -130,6 +170,11 @@ export default function RMDashboard() {
                 {item.id === 'leads' && leads.length > 0 && (
                   <span className={`ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full ${active ? 'bg-brand-500 text-white' : 'bg-gray-100 text-gray-500'}`}>
                     {leads.length}
+                  </span>
+                )}
+                {item.id === 'clients' && clients.length > 0 && (
+                  <span className={`ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full ${active ? 'bg-brand-500 text-white' : 'bg-gray-100 text-gray-500'}`}>
+                    {clients.length}
                   </span>
                 )}
               </button>
@@ -317,10 +362,110 @@ export default function RMDashboard() {
               >
                 <h2 className="text-xl font-bold text-gray-900 mb-1 md:hidden">Clients</h2>
                 <p className="text-sm text-gray-500 mb-6 md:hidden">Your active client portfolio</p>
-                <div className="bg-white rounded-2xl p-10 text-center border border-gray-100">
-                  <Users className="w-10 h-10 text-gray-300 mx-auto mb-3" />
-                  <p className="text-sm text-gray-400">Client management module — connect the clients API to populate.</p>
+
+                <div className="grid grid-cols-2 gap-3 md:gap-4 mb-6">
+                  <div className="bg-white rounded-2xl p-4 border border-gray-100 shadow-soft">
+                    <p className="text-[11px] text-gray-400 font-medium mb-1">Total Clients</p>
+                    <p className="text-xl md:text-2xl font-bold text-gray-900">
+                      {clientsLoading ? '—' : clients.length}
+                    </p>
+                  </div>
+                  <div className="bg-brand-50 rounded-2xl p-4 border border-brand-100">
+                    <p className="text-[11px] text-brand-400 font-medium mb-1">With AI Leads</p>
+                    <p className="text-xl md:text-2xl font-bold text-brand-600">
+                      {clientsLoading ? '—' : clients.filter((c) => c.leadCount > 0).length}
+                    </p>
+                  </div>
                 </div>
+
+                {clientsLoading ? (
+                  <div className="flex items-center justify-center py-20">
+                    <p className="text-sm text-gray-400">Loading clients...</p>
+                  </div>
+                ) : clients.length === 0 ? (
+                  <div className="bg-white rounded-2xl p-10 text-center border border-gray-100">
+                    <Users className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+                    <p className="text-sm text-gray-400 mb-1">No clients yet.</p>
+                    <p className="text-xs text-gray-400">
+                      Customers who sign up or generate AI leads will appear here.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    {clients.map((client, i) => {
+                      const intent = client.intent ? INTENT_STYLES[client.intent] : null;
+                      return (
+                        <motion.div
+                          key={client.id}
+                          initial={{ opacity: 0, y: 12 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ duration: 0.3, delay: i * 0.05 }}
+                          className="bg-white rounded-2xl p-5 border border-gray-100 shadow-card hover:border-brand-100 transition-all"
+                        >
+                          <div className="flex items-start justify-between mb-3">
+                            <div className="flex items-center gap-3">
+                              <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-brand-100 to-brand-200 flex items-center justify-center text-brand-600 font-bold text-base">
+                                {client.name.charAt(0)}
+                              </div>
+                              <div>
+                                <h3 className="text-sm font-semibold text-gray-900">{client.name}</h3>
+                                <p className="text-[11px] text-gray-400 mt-0.5">
+                                  {client.email ?? 'No email on file'}
+                                </p>
+                              </div>
+                            </div>
+                            <span className="text-[10px] font-semibold px-2.5 py-1 rounded-full bg-gray-100 text-gray-500">
+                              {client.source === 'registered' ? 'Registered' : 'From Lead'}
+                            </span>
+                          </div>
+
+                          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500 mb-3">
+                            {client.phone && (
+                              <span className="inline-flex items-center gap-1">
+                                <Phone className="w-3.5 h-3.5" />
+                                {client.phone}
+                              </span>
+                            )}
+                            <span className="inline-flex items-center gap-1">
+                              <Clock className="w-3.5 h-3.5" />
+                              {client.lastActive}
+                            </span>
+                            <span className="inline-flex items-center gap-1">
+                              <Zap className="w-3.5 h-3.5 text-brand-500" />
+                              {client.leadCount} lead{client.leadCount === 1 ? '' : 's'}
+                            </span>
+                          </div>
+
+                          {client.latestInsight ? (
+                            <div className="bg-gray-50 rounded-xl p-3">
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
+                                  Latest insight
+                                </span>
+                                {intent && (
+                                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${intent.bg} ${intent.text}`}>
+                                    {intent.label}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-sm text-gray-700 leading-relaxed">{client.latestInsight}</p>
+                              {client.product && (
+                                <p className="text-xs text-gray-400 mt-2 inline-flex items-center gap-1">
+                                  <GraduationCap className="w-3.5 h-3.5" />
+                                  {client.product}
+                                </p>
+                              )}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-gray-400 bg-gray-50 rounded-xl px-3 py-2">
+                              No AI leads yet — waiting for chat activity.
+                            </p>
+                          )}
+                        </motion.div>
+                      );
+                    })}
+                  </div>
+                )}
               </motion.div>
             )}
 
@@ -338,7 +483,7 @@ export default function RMDashboard() {
                   {[
                     { label: 'Conversion Rate', value: '34%', icon: TrendingUp },
                     { label: 'Avg. Response Time', value: '4.2m', icon: Clock },
-                    { label: 'Active Clients', value: '128', icon: Home },
+                    { label: 'Active Clients', value: String(clients.length || 0), icon: Home },
                   ].map((stat) => {
                     const Icon = stat.icon;
                     return (
@@ -354,18 +499,19 @@ export default function RMDashboard() {
                 </div>
                 <div className="bg-white rounded-2xl p-6 border border-gray-100">
                   <h3 className="text-sm font-semibold text-gray-900 mb-4">Weekly Lead Trend</h3>
-                  <div className="flex items-end justify-between gap-2 h-40">
-                    {[40, 65, 50, 80, 72, 90, 100].map((h, i) => (
-                      <div key={i} className="flex-1 flex flex-col items-center gap-2">
-                        <motion.div
-                          initial={{ height: 0 }}
-                          animate={{ height: `${h}%` }}
-                          transition={{ duration: 0.5, delay: i * 0.08 }}
-                          className="w-full bg-gradient-to-t from-brand-200 to-brand-400 rounded-t-md hover:from-brand-300 hover:to-brand-500 transition-colors"
-                        />
-                        <span className="text-[10px] text-gray-400">
-                          {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][i]}
-                        </span>
+                  <div className="flex items-end justify-between gap-2 h-44">
+                    {weeklyLeadTrend.map((day, i) => (
+                      <div key={day.label} className="flex-1 h-full flex flex-col items-center gap-2 min-w-0">
+                        <div className="w-full flex-1 flex items-end justify-center">
+                          <motion.div
+                            initial={{ height: 0 }}
+                            animate={{ height: `${Math.max(day.percent, day.count > 0 ? 12 : 4)}%` }}
+                            transition={{ duration: 0.5, delay: i * 0.08 }}
+                            className="w-full max-w-[36px] bg-gradient-to-t from-brand-200 to-brand-400 rounded-t-md hover:from-brand-300 hover:to-brand-500 transition-colors"
+                            title={`${day.count} lead${day.count === 1 ? '' : 's'}`}
+                          />
+                        </div>
+                        <span className="text-[10px] text-gray-400">{day.label}</span>
                       </div>
                     ))}
                   </div>

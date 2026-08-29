@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Send,
@@ -17,13 +17,20 @@ import {
 } from 'lucide-react';
 import type { ChatMessage, Language } from '@/types';
 import { logout, getCurrentUser } from '@/auth';
-
-const GREETINGS: Record<Language, string> = {
-  mm: 'မင်္ဂလာပါ ဦးအောင်၊ မနေ့က ခြေလှမ်း ၈၀၀၀ ပြည့်တဲ့အတွက် Kizuna Points ၅၀ ရပါတယ်! ဒီနေ့ရော မိသားစုတွေ နေကောင်းကြရဲ့လား။',
-  en: "Mingalabar U Aung! Congratulations on reaching 8,000 steps yesterday—you've earned 50 Kizuna Points! How is your family doing today?",
-};
+import { createLead, sendChatMessage } from '@/api';
 
 const TTS_LANG: Record<Language, string> = { mm: 'my-MM', en: 'en-US' };
+
+function getGreeting(language: Language, name: string): string {
+  if (language === 'mm') {
+    return `မင်္ဂလာပါ ${name}၊ မနေ့က ခြေလှမ်း ၈၀၀၀ ပြည့်တဲ့အတွက် Kizuna Points ၅၀ ရပါတယ်! ဒီနေ့ရော မိသားစုတွေ ကောင်းကြရဲ့လား။`;
+  }
+  return `Mingalabar ${name}! Congratulations on reaching 8,000 steps yesterday—you've earned 50 Kizuna Points! How is your family doing today?`;
+}
+
+function getWelcomeSpeech(name: string): string {
+  return `Mingalabar ${name}! Welcome to Kizuna AI. How can I help you protect your family today?`;
+}
 
 const PROJECTION_YEARS = [
   { year: 'Y1', value: 18 },
@@ -38,48 +45,41 @@ const PROJECTION_YEARS = [
   { year: 'Y10', value: 100 },
 ];
 
-const EDUCATION_KEYWORDS = ['school', 'education', 'child', 'children', 'preschool', 'university', 'student'];
+const FALLBACK_REPLY =
+  "I'm having a little trouble connecting right now, but I am still here to help your family!";
 
 const UI_TEXT: Record<Language, { placeholder: string; online: string; chatTitle: string; subtitle: string }> = {
   en: { placeholder: 'Ask about family protection...', online: 'Online', chatTitle: 'Chat with Kizuna', subtitle: "Your family's protection, simplified." },
   mm: { placeholder: 'မိသားစု ကာကွယ်ရေးအကြောင်း မေးပါ...', online: 'အွန်လိုင်း', chatTitle: 'Kizuna နဲ့ စကားပြော', subtitle: 'မိသားစု ကာကွယ်ရေး၊ ရိုးရှင်းပါစေ။' },
 };
 
-function saveLeadToStorage(insight: string) {
-  try {
-    const raw = localStorage.getItem('rm_leads');
-    const leads = raw ? JSON.parse(raw) : [];
-    const newLead = {
-      id: `lead-${Date.now()}`,
-      customerName: 'U Aung',
-      insight,
-      intent: 'high' as const,
-      product: 'Education Savings Plan',
-      lastActive: 'Just now',
-      timestamp: Date.now(),
-    };
-    const exists = leads.some((l: { customerName: string; insight: string }) =>
-      l.customerName === newLead.customerName && l.insight === newLead.insight
-    );
-    if (!exists) {
-      localStorage.setItem('rm_leads', JSON.stringify([newLead, ...leads]));
-    }
-  } catch {
-    // ignore
-  }
+function saveLeadToDb(insight: string) {
+  const user = getCurrentUser();
+  void createLead({
+    customerName: user?.name ?? 'Customer',
+    insight,
+    intent: 'high',
+    product: 'Education Savings Plan',
+    lastActive: 'Just now',
+  }).catch((err) => {
+    console.error('Failed to save lead to MongoDB:', err);
+  });
 }
 
 export default function CustomerApp() {
   const navigate = useNavigate();
+  const location = useLocation();
   const user = getCurrentUser();
+  const displayName = user?.name?.trim() || 'Friend';
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [language, setLanguage] = useState<Language>('en');
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [educationTriggered, setEducationTriggered] = useState(false);
+  const [isSending, setIsSending] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  const greeting = GREETINGS[language];
+  const greeting = getGreeting(language, displayName);
   const t = UI_TEXT[language];
 
   useEffect(() => {
@@ -92,6 +92,30 @@ export default function CustomerApp() {
       },
     ]);
   }, [greeting]);
+
+  useEffect(() => {
+    const shouldPlay = Boolean(
+      (location.state as { playWelcomeSpeech?: boolean } | null)?.playWelcomeSpeech
+    );
+    if (!shouldPlay || !('speechSynthesis' in window)) return;
+
+    const timer = window.setTimeout(() => {
+      const utterance = new SpeechSynthesisUtterance(getWelcomeSpeech(displayName));
+      utterance.lang = 'en-US';
+      utterance.rate = 0.9;
+      utterance.onend = () => setIsSpeaking(false);
+      utterance.onerror = () => setIsSpeaking(false);
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+      setIsSpeaking(true);
+      window.history.replaceState({}, '');
+    }, 800);
+
+    return () => {
+      window.clearTimeout(timer);
+      window.speechSynthesis.cancel();
+    };
+  }, [location.state, displayName]);
 
   const scrollToBottom = useCallback(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -128,17 +152,11 @@ export default function CustomerApp() {
     window.speechSynthesis.speak(utterance);
     setIsSpeaking(true);
   };
-
-  useEffect(() => {
-    return () => {
-      window.speechSynthesis.cancel();
-    };
-  }, []);
-
-  const handleSend = () => {
+  const handleSend = async () => {
     const text = input.trim();
-    if (!text) return;
+    if (!text || isSending) return;
 
+    const history = messages.map((m) => ({ sender: m.sender, text: m.text }));
     const userMsg: ChatMessage = {
       id: `u-${Date.now()}`,
       sender: 'user',
@@ -147,28 +165,32 @@ export default function CustomerApp() {
     };
     setMessages((prev) => [...prev, userMsg]);
     setInput('');
+    setIsSending(true);
 
-    const lowerText = text.toLowerCase();
-    const isEducation = EDUCATION_KEYWORDS.some((kw) => lowerText.includes(kw));
+    try {
+      const { reply, educationLead } = await sendChatMessage({
+        message: text,
+        history,
+        language,
+      });
 
-    if (isEducation) {
-      const aiResponse = language === 'en'
-        ? "That's wonderful! Planning for your child's education is one of the most important decisions you can make. I'd recommend trying our Education Savings Simulator — it shows a personalized 10-year projection based on your monthly savings. Would you like to see it below? I've also notified our advisor team to prepare a tailored plan for you."
-        : 'အရမ်းကောင်းပါတယ်! သင့်ကလေးရဲ့ ပညာရေးအတွက် စီမံခြင်းက အရေးကြီးဆုံး ဆုံးဖြတ်ချက်တစ်ခုပါ။ ကျွန်ုပ်တို့ရဲ့ ပညာရေး ငွေစု Simulator ကို စမ်းကြည့်ဖို့ အကြံပြုပါတယ်။ အောက်မှာ ကြည့်နိုင်ပါတယ်။';
       setMessages((prev) => [
         ...prev,
-        { id: `a-${Date.now()}`, sender: 'ai', text: aiResponse, timestamp: Date.now() },
+        { id: `a-${Date.now()}`, sender: 'ai', text: reply, timestamp: Date.now() },
       ]);
-      saveLeadToStorage('Interested in Education Plan');
-      setEducationTriggered(true);
-    } else {
-      const aiResponse = language === 'en'
-        ? "I understand. I'm here to help you protect what matters most — your family. You can ask me about education savings, health coverage, or life protection anytime."
-        : 'နားလည်ပါတယ်။ သင့်မိသားစုကို ကာကွယ်ဖို့ ကျွန်ုပ် အသင့်ပါ။ ပညာရေး ငွေစု၊ ကျန်းမာရေး ကာကွယ်မှု၊ သို့မဟုတ် ဘဝ ကာကွယ်မှုအကြောင်း မေးနိုင်ပါတယ်။';
+
+      if (educationLead) {
+        saveLeadToDb('Interested in Education Plan');
+        setEducationTriggered(true);
+      }
+    } catch (err) {
+      console.error('Chat failed:', err);
       setMessages((prev) => [
         ...prev,
-        { id: `a-${Date.now()}`, sender: 'ai', text: aiResponse, timestamp: Date.now() },
+        { id: `a-${Date.now()}`, sender: 'ai', text: FALLBACK_REPLY, timestamp: Date.now() },
       ]);
+    } finally {
+      setIsSending(false);
     }
   };
 
@@ -217,7 +239,7 @@ export default function CustomerApp() {
 
           {/* Greeting */}
           <h1 className="text-xl font-bold text-gray-900 mb-1">
-            {language === 'en' ? `Mingalabar, ${user?.name ?? 'U Aung'}!` : `မင်္ဂလာပါ၊ ${user?.name ?? 'ဦးအောင်'}!`}
+            {language === 'en' ? `Mingalabar, ${displayName}!` : `မင်္ဂလာပါ၊ ${displayName}!`}
           </h1>
           <p className="text-sm text-gray-500 mb-4">{t.subtitle}</p>
 
@@ -320,6 +342,16 @@ export default function CustomerApp() {
                 </motion.div>
               ))}
             </AnimatePresence>
+            {isSending && (
+              <div className="flex justify-start">
+                <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-brand-500 to-brand-600 flex items-center justify-center mr-2 flex-shrink-0 self-end mb-1">
+                  <Heart className="w-3.5 h-3.5 text-white" fill="white" />
+                </div>
+                <div className="px-4 py-2.5 rounded-2xl rounded-bl-md bg-white border border-gray-100 shadow-soft text-sm text-gray-400">
+                  Thinking…
+                </div>
+              </div>
+            )}
             <div ref={chatEndRef} />
           </div>
 
@@ -332,11 +364,12 @@ export default function CustomerApp() {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder={t.placeholder}
-                className="flex-1 bg-transparent text-sm text-gray-700 placeholder-gray-400 outline-none"
+                disabled={isSending}
+                className="flex-1 bg-transparent text-sm text-gray-700 placeholder-gray-400 outline-none disabled:opacity-60"
               />
               <button
                 onClick={handleSend}
-                disabled={!input.trim()}
+                disabled={!input.trim() || isSending}
                 className="w-9 h-9 rounded-xl bg-brand-500 text-white flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed hover:bg-brand-600 active:scale-95 transition-all"
                 aria-label="Send message"
               >
