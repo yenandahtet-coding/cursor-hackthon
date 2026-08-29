@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Send,
@@ -8,77 +9,89 @@ import {
   Heart,
   Shield,
   GraduationCap,
-  Loader2,
-  CircleUser,
+  Volume2,
+  Square,
+  LogOut,
+  Globe,
+  Calculator,
 } from 'lucide-react';
-import type { ChatMessage, UserData } from '@/types';
+import type { ChatMessage, Language } from '@/types';
+import { logout, getCurrentUser } from '@/auth';
 
-const API_BASE = 'http://localhost:5000/api';
-
-const MOCK_WELCOME: ChatMessage = {
-  id: 'welcome',
-  sender: 'ai',
-  text: "Mingalabar! I'm Kizuna, your family insurance companion. How can I help you protect your family's future today?",
-  timestamp: Date.now(),
+const GREETINGS: Record<Language, string> = {
+  mm: 'မင်္ဂလာပါ ဦးအောင်၊ မနေ့က ခြေလှမ်း ၈၀၀၀ ပြည့်တဲ့အတွက် Kizuna Points ၅၀ ရပါတယ်! ဒီနေ့ရော မိသားစုတွေ နေကောင်းကြရဲ့လား။',
+  en: "Mingalabar U Aung! Congratulations on reaching 8,000 steps yesterday—you've earned 50 Kizuna Points! How is your family doing today?",
 };
 
+const TTS_LANG: Record<Language, string> = { mm: 'my-MM', en: 'en-US' };
+
 const PROJECTION_YEARS = [
-  { year: 'Y1', value: 18, total: 1200000 },
-  { year: 'Y2', value: 26, total: 2520000 },
-  { year: 'Y3', value: 34, total: 3978000 },
-  { year: 'Y4', value: 42, total: 5580000 },
-  { year: 'Y5', value: 50, total: 7344000 },
-  { year: 'Y6', value: 58, total: 9270000 },
-  { year: 'Y7', value: 66, total: 11370000 },
-  { year: 'Y8', value: 74, total: 13680000 },
-  { year: 'Y9', value: 82, total: 16200000 },
-  { year: 'Y10', value: 100, total: 18950000 },
+  { year: 'Y1', value: 18 },
+  { year: 'Y2', value: 26 },
+  { year: 'Y3', value: 34 },
+  { year: 'Y4', value: 42 },
+  { year: 'Y5', value: 50 },
+  { year: 'Y6', value: 58 },
+  { year: 'Y7', value: 66 },
+  { year: 'Y8', value: 74 },
+  { year: 'Y9', value: 82 },
+  { year: 'Y10', value: 100 },
 ];
 
-function formatPoints(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
-  return String(n);
+const EDUCATION_KEYWORDS = ['school', 'education', 'child', 'children', 'preschool', 'university', 'student'];
+
+const UI_TEXT: Record<Language, { placeholder: string; online: string; chatTitle: string; subtitle: string }> = {
+  en: { placeholder: 'Ask about family protection...', online: 'Online', chatTitle: 'Chat with Kizuna', subtitle: "Your family's protection, simplified." },
+  mm: { placeholder: 'မိသားစု ကာကွယ်ရေးအကြောင်း မေးပါ...', online: 'အွန်လိုင်း', chatTitle: 'Kizuna နဲ့ စကားပြော', subtitle: 'မိသားစု ကာကွယ်ရေး၊ ရိုးရှင်းပါစေ။' },
+};
+
+function saveLeadToStorage(insight: string) {
+  try {
+    const raw = localStorage.getItem('rm_leads');
+    const leads = raw ? JSON.parse(raw) : [];
+    const newLead = {
+      id: `lead-${Date.now()}`,
+      customerName: 'U Aung',
+      insight,
+      intent: 'high' as const,
+      product: 'Education Savings Plan',
+      lastActive: 'Just now',
+      timestamp: Date.now(),
+    };
+    const exists = leads.some((l: { customerName: string; insight: string }) =>
+      l.customerName === newLead.customerName && l.insight === newLead.insight
+    );
+    if (!exists) {
+      localStorage.setItem('rm_leads', JSON.stringify([newLead, ...leads]));
+    }
+  } catch {
+    // ignore
+  }
 }
 
 export default function CustomerApp() {
-  const [messages, setMessages] = useState<ChatMessage[]>([MOCK_WELCOME]);
+  const navigate = useNavigate();
+  const user = getCurrentUser();
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
-  const [isSending, setIsSending] = useState(false);
-  const [userData, setUserData] = useState<UserData | null>(null);
-  const [userLoading, setUserLoading] = useState(true);
+  const [language, setLanguage] = useState<Language>('en');
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [educationTriggered, setEducationTriggered] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
+  const greeting = GREETINGS[language];
+  const t = UI_TEXT[language];
+
   useEffect(() => {
-    let active = true;
-    (async () => {
-      try {
-        const res = await fetch(`${API_BASE}/user/U_Aung`);
-        if (!res.ok) throw new Error('Failed to fetch user');
-        const data = await res.json();
-        if (!active) return;
-        setUserData({
-          name: data.name ?? 'U Aung',
-          kizunaPoints: data.kizunaPoints ?? 1250,
-          dailyStreak: data.dailyStreak ?? 3,
-          avatarInitial: (data.name ?? 'U Aung').charAt(0),
-        });
-      } catch {
-        if (!active) return;
-        setUserData({
-          name: 'U Aung',
-          kizunaPoints: 1250,
-          dailyStreak: 3,
-          avatarInitial: 'U',
-        });
-      } finally {
-        if (active) setUserLoading(false);
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, []);
+    setMessages([
+      {
+        id: 'greeting',
+        sender: 'ai',
+        text: greeting,
+        timestamp: Date.now(),
+      },
+    ]);
+  }, [greeting]);
 
   const scrollToBottom = useCallback(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -88,9 +101,43 @@ export default function CustomerApp() {
     scrollToBottom();
   }, [messages, scrollToBottom]);
 
-  const handleSend = async () => {
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
+
+  const toggleLanguage = () => {
+    setLanguage((prev) => (prev === 'en' ? 'mm' : 'en'));
+    window.speechSynthesis.cancel();
+    setIsSpeaking(false);
+  };
+
+  const handleSpeak = () => {
+    if (isSpeaking) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+      return;
+    }
+    if (!('speechSynthesis' in window)) return;
+    const utterance = new SpeechSynthesisUtterance(greeting);
+    utterance.lang = TTS_LANG[language];
+    utterance.rate = 0.9;
+    utterance.onend = () => setIsSpeaking(false);
+    utterance.onerror = () => setIsSpeaking(false);
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+    setIsSpeaking(true);
+  };
+
+  useEffect(() => {
+    return () => {
+      window.speechSynthesis.cancel();
+    };
+  }, []);
+
+  const handleSend = () => {
     const text = input.trim();
-    if (!text || isSending) return;
+    if (!text) return;
 
     const userMsg: ChatMessage = {
       id: `u-${Date.now()}`,
@@ -100,42 +147,28 @@ export default function CustomerApp() {
     };
     setMessages((prev) => [...prev, userMsg]);
     setInput('');
-    setIsSending(true);
 
-    try {
-      const res = await fetch(`${API_BASE}/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userName: 'U_Aung', message: text }),
-      });
-      if (!res.ok) throw new Error('Chat request failed');
-      const data = await res.json();
-      const aiText =
-        data.response ??
-        data.reply ??
-        data.message ??
-        "I understand. Let me help you find the best protection plan for your family.";
+    const lowerText = text.toLowerCase();
+    const isEducation = EDUCATION_KEYWORDS.some((kw) => lowerText.includes(kw));
+
+    if (isEducation) {
+      const aiResponse = language === 'en'
+        ? "That's wonderful! Planning for your child's education is one of the most important decisions you can make. I'd recommend trying our Education Savings Simulator — it shows a personalized 10-year projection based on your monthly savings. Would you like to see it below? I've also notified our advisor team to prepare a tailored plan for you."
+        : 'အရမ်းကောင်းပါတယ်! သင့်ကလေးရဲ့ ပညာရေးအတွက် စီမံခြင်းက အရေးကြီးဆုံး ဆုံးဖြတ်ချက်တစ်ခုပါ။ ကျွန်ုပ်တို့ရဲ့ ပညာရေး ငွေစု Simulator ကို စမ်းကြည့်ဖို့ အကြံပြုပါတယ်။ အောက်မှာ ကြည့်နိုင်ပါတယ်။';
       setMessages((prev) => [
         ...prev,
-        {
-          id: `a-${Date.now()}`,
-          sender: 'ai',
-          text: aiText,
-          timestamp: Date.now(),
-        },
+        { id: `a-${Date.now()}`, sender: 'ai', text: aiResponse, timestamp: Date.now() },
       ]);
-    } catch {
+      saveLeadToStorage('Interested in Education Plan');
+      setEducationTriggered(true);
+    } else {
+      const aiResponse = language === 'en'
+        ? "I understand. I'm here to help you protect what matters most — your family. You can ask me about education savings, health coverage, or life protection anytime."
+        : 'နားလည်ပါတယ်။ သင့်မိသားစုကို ကာကွယ်ဖို့ ကျွန်ုပ် အသင့်ပါ။ ပညာရေး ငွေစု၊ ကျန်းမာရေး ကာကွယ်မှု၊ သို့မဟုတ် ဘဝ ကာကွယ်မှုအကြောင်း မေးနိုင်ပါတယ်။';
       setMessages((prev) => [
         ...prev,
-        {
-          id: `a-${Date.now()}`,
-          sender: 'ai',
-          text: "I'm having trouble connecting right now, but I'm still here for you. Please try again in a moment.",
-          timestamp: Date.now(),
-        },
+        { id: `a-${Date.now()}`, sender: 'ai', text: aiResponse, timestamp: Date.now() },
       ]);
-    } finally {
-      setIsSending(false);
     }
   };
 
@@ -150,7 +183,8 @@ export default function CustomerApp() {
     <div className="min-h-screen bg-gray-50 pb-8">
       {/* Header */}
       <header className="bg-white sticky top-0 z-20 shadow-soft">
-        <div className="max-w-md mx-auto px-5 pt-6 pb-5">
+        <div className="max-w-md mx-auto px-5 pt-5 pb-5">
+          {/* Top row: logo + controls */}
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-3">
               <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center shadow-glow">
@@ -160,28 +194,32 @@ export default function CustomerApp() {
                 <p className="text-[11px] text-gray-400 font-medium tracking-wide uppercase">
                   Kizuna AI
                 </p>
-                <p className="text-sm font-semibold text-gray-800">
-                  Family Bond
-                </p>
+                <p className="text-sm font-semibold text-gray-800">Family Bond</p>
               </div>
             </div>
-            {userLoading ? (
-              <Loader2 className="w-5 h-5 text-brand-500 animate-spin" />
-            ) : (
-              <div className="w-10 h-10 rounded-full bg-brand-50 border border-brand-100 flex items-center justify-center">
-                <CircleUser className="w-5 h-5 text-brand-500" />
-              </div>
-            )}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={toggleLanguage}
+                className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 bg-gray-50 hover:bg-gray-100 px-3 py-2 rounded-xl border border-gray-100 transition"
+              >
+                <Globe className="w-3.5 h-3.5" />
+                {language === 'en' ? 'EN' : 'MM'}
+              </button>
+              <button
+                onClick={handleLogout}
+                className="flex items-center gap-1.5 text-xs font-semibold text-brand-600 bg-brand-50 hover:bg-brand-100 px-3 py-2 rounded-xl border border-brand-100 transition"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span className="hidden xs:inline">Log Out</span>
+              </button>
+            </div>
           </div>
 
-          <div className="flex items-center justify-between mb-1">
-            <h1 className="text-xl font-bold text-gray-900">
-              Mingalabar, {userData?.name ?? '...'}!
-            </h1>
-          </div>
-          <p className="text-sm text-gray-500 mb-4">
-            Your family's protection, simplified.
-          </p>
+          {/* Greeting */}
+          <h1 className="text-xl font-bold text-gray-900 mb-1">
+            {language === 'en' ? `Mingalabar, ${user?.name ?? 'U Aung'}!` : `မင်္ဂလာပါ၊ ${user?.name ?? 'ဦးအောင်'}!`}
+          </h1>
+          <p className="text-sm text-gray-500 mb-4">{t.subtitle}</p>
 
           {/* Stats cards */}
           <div className="grid grid-cols-2 gap-3">
@@ -189,37 +227,21 @@ export default function CustomerApp() {
               <div className="absolute -right-4 -top-4 w-20 h-20 rounded-full bg-white/10" />
               <div className="flex items-center gap-1.5 mb-1 relative">
                 <Sparkles className="w-3.5 h-3.5" />
-                <span className="text-[11px] font-medium opacity-90">
-                  Kizuna Points
-                </span>
+                <span className="text-[11px] font-medium opacity-90">Kizuna Points</span>
               </div>
-              <p className="text-2xl font-bold relative">
-                {userData
-                  ? formatPoints(userData.kizunaPoints)
-                  : '---'}
-              </p>
-              <p className="text-[10px] opacity-80 mt-0.5 relative">
-                +50 earned today
-              </p>
+              <p className="text-2xl font-bold relative">1,300</p>
+              <p className="text-[10px] opacity-80 mt-0.5 relative">+50 earned today</p>
             </div>
-
             <div className="bg-white rounded-2xl p-4 border border-gray-100 shadow-soft relative overflow-hidden">
               <div className="absolute -right-3 -bottom-3 w-16 h-16 rounded-full bg-orange-50" />
               <div className="flex items-center gap-1.5 mb-1 relative">
                 <Flame className="w-3.5 h-3.5 text-orange-500" fill="currentColor" />
-                <span className="text-[11px] font-medium text-gray-500">
-                  Daily Streak
-                </span>
+                <span className="text-[11px] font-medium text-gray-500">Daily Streak</span>
               </div>
               <p className="text-2xl font-bold text-gray-900 relative">
-                {userData?.dailyStreak ?? '—'}{' '}
-                <span className="text-sm font-medium text-gray-400">
-                  Days
-                </span>
+                3 <span className="text-sm font-medium text-gray-400">Days</span>
               </p>
-              <p className="text-[10px] text-orange-500 mt-0.5 relative font-medium">
-                Keep it going!
-              </p>
+              <p className="text-[10px] text-orange-500 mt-0.5 relative font-medium">Keep it going!</p>
             </div>
           </div>
         </div>
@@ -227,6 +249,31 @@ export default function CustomerApp() {
 
       {/* Main content */}
       <main className="max-w-md mx-auto px-5 mt-5 space-y-5">
+        {/* AI Greeting with TTS */}
+        <section className="bg-gradient-to-br from-brand-50 to-white rounded-2xl p-4 border border-brand-100">
+          <div className="flex items-start gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-brand-500 to-brand-600 flex items-center justify-center flex-shrink-0">
+              <Sparkles className="w-4 h-4 text-white" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm text-gray-700 leading-relaxed" dir={language === 'mm' ? 'rtl' : 'ltr'}>
+                {greeting}
+              </p>
+            </div>
+            <button
+              onClick={handleSpeak}
+              className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 transition-all active:scale-95 ${
+                isSpeaking
+                  ? 'bg-brand-500 text-white'
+                  : 'bg-white text-brand-500 hover:bg-brand-50 border border-brand-100'
+              }`}
+              aria-label="Play audio"
+            >
+              {isSpeaking ? <Square className="w-4 h-4" fill="currentColor" /> : <Volume2 className="w-4 h-4" />}
+            </button>
+          </div>
+        </section>
+
         {/* Chat Card */}
         <section className="bg-white rounded-3xl shadow-card border border-gray-100 overflow-hidden">
           <div className="px-5 py-4 border-b border-gray-50 flex items-center justify-between">
@@ -235,12 +282,10 @@ export default function CustomerApp() {
                 <Sparkles className="w-4 h-4 text-brand-500" />
               </div>
               <div>
-                <h2 className="text-sm font-semibold text-gray-900">
-                  Chat with Kizuna
-                </h2>
+                <h2 className="text-sm font-semibold text-gray-900">{t.chatTitle}</h2>
                 <p className="text-[11px] text-green-500 flex items-center gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse-soft" />
-                  Online
+                  {t.online}
                 </p>
               </div>
             </div>
@@ -256,9 +301,7 @@ export default function CustomerApp() {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.25 }}
-                  className={`flex ${
-                    msg.sender === 'user' ? 'justify-end' : 'justify-start'
-                  }`}
+                  className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
                 >
                   {msg.sender === 'ai' && (
                     <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-brand-500 to-brand-600 flex items-center justify-center mr-2 flex-shrink-0 self-end mb-1">
@@ -277,18 +320,6 @@ export default function CustomerApp() {
                 </motion.div>
               ))}
             </AnimatePresence>
-            {isSending && (
-              <div className="flex justify-start">
-                <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-brand-500 to-brand-600 flex items-center justify-center mr-2 flex-shrink-0 self-end mb-1">
-                  <Heart className="w-3.5 h-3.5 text-white" fill="white" />
-                </div>
-                <div className="bg-white rounded-2xl rounded-bl-md border border-gray-100 shadow-soft px-4 py-3 flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-gray-300 animate-bounce [animation-delay:-0.3s]" />
-                  <span className="w-2 h-2 rounded-full bg-gray-300 animate-bounce [animation-delay:-0.15s]" />
-                  <span className="w-2 h-2 rounded-full bg-gray-300 animate-bounce" />
-                </div>
-              </div>
-            )}
             <div ref={chatEndRef} />
           </div>
 
@@ -300,13 +331,12 @@ export default function CustomerApp() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Ask about family protection..."
+                placeholder={t.placeholder}
                 className="flex-1 bg-transparent text-sm text-gray-700 placeholder-gray-400 outline-none"
-                disabled={isSending}
               />
               <button
                 onClick={handleSend}
-                disabled={!input.trim() || isSending}
+                disabled={!input.trim()}
                 className="w-9 h-9 rounded-xl bg-brand-500 text-white flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed hover:bg-brand-600 active:scale-95 transition-all"
                 aria-label="Send message"
               >
@@ -316,8 +346,12 @@ export default function CustomerApp() {
           </div>
         </section>
 
-        {/* Savings Projection Chart */}
-        <section className="bg-white rounded-3xl shadow-card border border-gray-100 p-5">
+        {/* Education Savings Simulator / Chart */}
+        <section
+          className={`bg-white rounded-3xl shadow-card border p-5 transition-all ${
+            educationTriggered ? 'border-brand-200 ring-2 ring-brand-100' : 'border-gray-100'
+          }`}
+        >
           <div className="flex items-center justify-between mb-1">
             <div className="flex items-center gap-2">
               <div className="w-8 h-8 rounded-xl bg-blue-50 flex items-center justify-center">
@@ -325,34 +359,42 @@ export default function CustomerApp() {
               </div>
               <div>
                 <h2 className="text-sm font-semibold text-gray-900">
-                  Education Savings
+                  {language === 'en' ? 'Education Savings' : 'ပညာရေး ငွေစု'}
                 </h2>
                 <p className="text-[11px] text-gray-400">
-                  10-Year Projection
+                  {language === 'en' ? '10-Year Projection' : '၁၀ နှစ် ခန့်မှန်းချက်'}
                 </p>
               </div>
             </div>
             <div className="flex items-center gap-1 text-brand-500 text-xs font-semibold bg-brand-50 px-2.5 py-1.5 rounded-lg">
               <TrendingUp className="w-3.5 h-3.5" />
-              +58% growth
+              +58%
             </div>
           </div>
 
+          {educationTriggered && (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="flex items-center gap-2 mt-3 mb-2 text-[11px] font-medium text-brand-600 bg-brand-50 rounded-lg px-3 py-2"
+            >
+              <Calculator className="w-3.5 h-3.5" />
+              {language === 'en'
+                ? 'Simulator activated based on your conversation'
+                : 'စကားပြောဆိုမှုအပေါ် အခြေခံ၍ Simulator ဖွင့်ထားပါသည်'}
+            </motion.div>
+          )}
+
           <div className="mt-4 mb-3 flex items-baseline gap-2">
-            <span className="text-2xl font-bold text-gray-900">
-              18.95M
-            </span>
+            <span className="text-2xl font-bold text-gray-900">18.95M</span>
             <span className="text-xs text-gray-400 font-medium">MMK target</span>
           </div>
 
           {/* Bar chart */}
           <div className="flex items-end justify-between gap-1.5 h-32 pt-2">
             {PROJECTION_YEARS.map((d, i) => (
-              <div
-                key={d.year}
-                className="flex-1 flex flex-col items-center gap-1.5 group"
-              >
-                <div className="w-full flex flex-col justify-end h-full relative">
+              <div key={d.year} className="flex-1 flex flex-col items-center gap-1.5 group">
+                <div className="w-full flex flex-col justify-end h-full">
                   <motion.div
                     initial={{ height: 0 }}
                     animate={{ height: `${d.value}%` }}
@@ -364,35 +406,22 @@ export default function CustomerApp() {
                     } transition-colors`}
                   />
                 </div>
-                <span className="text-[9px] text-gray-400 font-medium">
-                  {d.year}
-                </span>
+                <span className="text-[9px] text-gray-400 font-medium">{d.year}</span>
               </div>
             ))}
           </div>
 
-          <div className="mt-4 flex items-center gap-4 text-[11px] text-gray-500">
-            <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-sm bg-brand-300" />
-              Annual savings
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-sm bg-brand-500" />
-              Goal year
-            </div>
-          </div>
-
           <div className="mt-4 grid grid-cols-3 gap-2">
             <div className="bg-gray-50 rounded-xl p-2.5 text-center">
-              <p className="text-[10px] text-gray-400">Monthly</p>
+              <p className="text-[10px] text-gray-400">{language === 'en' ? 'Monthly' : 'လစဉ်'}</p>
               <p className="text-sm font-bold text-gray-800">150K</p>
             </div>
             <div className="bg-gray-50 rounded-xl p-2.5 text-center">
-              <p className="text-[10px] text-gray-400">Returns</p>
+              <p className="text-[10px] text-gray-400">{language === 'en' ? 'Returns' : 'အမြတ်'}</p>
               <p className="text-sm font-bold text-gray-800">6.5%</p>
             </div>
             <div className="bg-brand-50 rounded-xl p-2.5 text-center">
-              <p className="text-[10px] text-brand-400">Bonus</p>
+              <p className="text-[10px] text-brand-400">{language === 'en' ? 'Bonus' : 'ပိုစား'}</p>
               <p className="text-sm font-bold text-brand-600">+250K</p>
             </div>
           </div>
@@ -404,11 +433,13 @@ export default function CustomerApp() {
           <div className="relative">
             <div className="flex items-center gap-2 mb-3">
               <Shield className="w-5 h-5 text-brand-400" />
-              <h2 className="text-sm font-semibold">Family Protection</h2>
+              <h2 className="text-sm font-semibold">
+                {language === 'en' ? 'Family Protection' : 'မိသားစု ကာကွယ်မှု'}
+              </h2>
             </div>
             <p className="text-2xl font-bold mb-1">84%</p>
             <p className="text-xs text-gray-400 mb-3">
-              Coverage score — good progress!
+              {language === 'en' ? 'Coverage score — good progress!' : 'ဖုံးဆွတ် အမှတ် — ကောင်းမွန်ပါသည်!'}
             </p>
             <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
               <motion.div

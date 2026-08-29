@@ -9,7 +9,6 @@ export interface UserData {
   name: string;
   kizunaPoints: number;
   dailyStreak: number;
-  avatarInitial?: string;
 }
 
 export interface Lead {
@@ -22,4 +21,12 @@ export interface Lead {
   phone?: string;
 }
 
-export type ViewMode = 'customer' | 'rm';
+export type UserRole = 'customer' | 'rm';
+
+export interface AuthUser {
+  name: string;
+  role: UserRole;
+  email: string;
+}
+
+export type Language = 'en' | 'mm';
